@@ -293,7 +293,7 @@ void updateBootDisplay() {
   
   // Title
   display.setCursor(15, 2);
-  display.println("T-800 SERIES 800");
+  display.println("T-800 SERIES ARMED");
   display.drawLine(0, 12, 127, 12, WHITE);
   
   // Boot sequence
@@ -329,8 +329,8 @@ void updateTelemetryDisplay() {
   display.setTextColor(WHITE);
   
   // Title bar
-  display.setCursor(18, 2);
-  display.println("[T-800 COMBAT MODE]");
+  display.setCursor(12, 2);
+  display.println("T-800 COMBAT MODE");
   display.drawLine(0, 10, 127, 10, WHITE);
   
   // Axis readouts
@@ -363,8 +363,8 @@ void updateDemoDisplay() {
   display.setTextColor(WHITE);
   
   // Title bar
-  display.setCursor(32, 2);
-  display.println("[AUTONOMOUS MODE]");
+  display.setCursor(15, 2);
+  display.println("AUTONOMOUS MODE");
   display.drawLine(0, 10, 127, 10, WHITE);
   
   struct tm timeinfo;
@@ -378,7 +378,7 @@ void updateDemoDisplay() {
         display.setCursor(10, 26);
         display.println("PROCESSOR ONLINE");
         
-        display.setCursor(12, 38);
+        display.setCursor(14, 38);
         display.println("MISSION TIME:");
         strftime(buf, sizeof(buf), "%H:%M:%S", &timeinfo);
         display.setCursor(28, 48);
@@ -386,7 +386,7 @@ void updateDemoDisplay() {
         break;
 
       case 1: // Mission time display
-        display.setCursor(20, 16);
+        display.setCursor(23, 16);
         display.println("MISSION TIME");
         display.setTextSize(2);
         strftime(buf, sizeof(buf), "%H:%M", &timeinfo);
