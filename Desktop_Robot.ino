@@ -200,6 +200,10 @@ void processJoystickInput() {
 
   for (int i = 0; i < 3; i++) {
     int diff = robot.rawInputs[i] - JOYSTICK_CENTER;
+    // Reverse axis 2 (invert the difference)
+    if (i == 2) {
+      diff = -diff;
+    }
     if (abs(diff) > JOYSTICK_DEADZONE) {
       float normalized = (float)(abs(diff) - JOYSTICK_DEADZONE) / JOYSTICK_MAX_RANGE;
       float speed = (normalized * normalized) * SERVO_SPEED_MULTIPLIER;
