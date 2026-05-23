@@ -149,6 +149,9 @@ float demoPoses[NUM_DEMO_POSES][NUM_SERVOS] = {
   {90, 90, 90, 70}
 };
 
+/* HOME POSITION - Center all servos with gripper open */
+float homePosition[NUM_SERVOS] = {90, 90, 90, 70};
+
 /* 
  * [SECTION 7: SERVO CONTROL]
  */
@@ -173,6 +176,14 @@ void updateServoPositions() {
       setServoPosition(i, robot.currentPos[i]);
     }
   }
+}
+
+void returnToHome() {
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    robot.targetPos[i] = homePosition[i];
+  }
+  robot.lastInputTime = millis();
+  robot.mode = MANUAL;
 }
 
 /* 
@@ -225,6 +236,18 @@ void processGripperControl() {
   lastSw2 = sw2;
 }
 
+void processHomeButton() {
+  bool sw1 = digitalRead(joySW1) == LOW;
+  static bool lastSw1 = HIGH;
+  
+  if (sw1 && lastSw1 == HIGH) {
+    returnToHome();
+    playServoRelease();
+    Serial.println("HOME POSITION - All servos centered");
+  }
+  lastSw1 = sw1;
+}
+
 /* 
  * [SECTION 9: OPERATING MODE MANAGEMENT]
  */
@@ -255,11 +278,7 @@ void runDemoMode() {
  * [SECTION 10: T-800 DISPLAY MANAGEMENT]
  */
 void drawScanlineFrame() {
-  // Draw scanlines effect
-  for (int y = 0; y < SCREEN_HEIGHT; y += 2) {
-    display.drawLine(0, y, SCREEN_WIDTH - 1, y, WHITE);
-  }
-  // Draw border rectangle
+  // Draw border rectangle ONLY (no scanlines to avoid screen lines effect)
   display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, WHITE);
 }
 
@@ -475,6 +494,7 @@ void setup() {
 void loop() {
   processJoystickInput();
   processGripperControl();
+  processHomeButton();
   updateOperatingMode();
 
   switch (robot.mode) {
