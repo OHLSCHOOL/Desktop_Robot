@@ -150,7 +150,7 @@ float demoPoses[NUM_DEMO_POSES][NUM_SERVOS] = {
 };
 
 /* HOME POSITION - Center all servos with gripper open */
-float homePosition[NUM_SERVOS] = {90, 90, 90, 70};
+float homePosition[NUM_SERVOS] = {70, 35, 0, 160};
 
 /* 
  * [SECTION 7: SERVO CONTROL]
