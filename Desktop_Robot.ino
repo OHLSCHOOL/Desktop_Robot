@@ -200,8 +200,8 @@ void processJoystickInput() {
 
   for (int i = 0; i < 3; i++) {
     int diff = robot.rawInputs[i] - JOYSTICK_CENTER;
-    // Reverse axis 2 (invert the difference)
-    if (i == 2) {
+    // Reverse axis 2 and axis 3 (invert the difference)
+    if (i == 2 || i == 1) {
       diff = -diff;
     }
     if (abs(diff) > JOYSTICK_DEADZONE) {
