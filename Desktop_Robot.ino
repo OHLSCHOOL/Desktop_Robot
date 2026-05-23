@@ -46,6 +46,14 @@ const int buzzerPin = 21;
 #define MOVEMENT_THRESHOLD 0.05
 
 /* 
+ * [SECTION 3.5: GAME MODE CONSTANTS]
+ */
+#define GAME_MENU 3
+#define GAME_ACTIVE 4
+#define NUM_GAMES 3
+#define DUAL_PRESS_TIMEOUT 300
+
+/* 
  * [SECTION 4: TERMINATOR T-800 AUDIO ENGINE]
  */
 void playTerminatorStartup() {
@@ -118,10 +126,51 @@ void playServoRelease() {
   noTone(buzzerPin);
 }
 
+void playGameSelect() {
+  tone(buzzerPin, 1046, 100);
+  delay(50);
+  tone(buzzerPin, 1046, 100);
+  noTone(buzzerPin);
+}
+
+void playGameSuccess() {
+  tone(buzzerPin, 1046, 150);
+  delay(100);
+  tone(buzzerPin, 1046, 150);
+  delay(100);
+  tone(buzzerPin, 1046, 300);
+  noTone(buzzerPin);
+}
+
+void playGameFail() {
+  tone(buzzerPin, 523, 200);
+  delay(100);
+  tone(buzzerPin, 440, 300);
+  noTone(buzzerPin);
+}
+
 /* 
  * [SECTION 5: ROBOT STATE STRUCTURE]
  */
-enum RobotMode { MANUAL = 0, DEMO = 1, IDLE = 2 };
+enum RobotMode { MANUAL = 0, DEMO = 1, IDLE = 2, GAME_MENU = 3, GAME_ACTIVE = 4 };
+
+struct GameState {
+  int currentGame;
+  int score;
+  uint32_t gameStartTime;
+  uint32_t lastEventTime;
+  int targetScore;
+  bool gameWon;
+  // Target Hunt specifics
+  int targetX, targetY;
+  int playerX, playerY;
+  // Reaction Time specifics
+  uint32_t reactionStartTime;
+  bool displayedReady;
+  // Dodge specifics
+  int obstacleX, obstacleY;
+  int dodgePosition;
+} game;
 
 struct RobotState {
   float targetPos[NUM_SERVOS];
@@ -135,6 +184,8 @@ struct RobotState {
   RobotMode mode;
   int rawInputs[4];
   int bootStage;
+  uint32_t sw1PressTime, sw2PressTime;
+  bool sw1Pressed, sw2Pressed;
 } robot;
 
 Servo servos[NUM_SERVOS];
@@ -198,26 +249,28 @@ void processJoystickInput() {
   bool moved = false;
   float maxSpeed = 0;
 
-  for (int i = 0; i < 3; i++) {
-    int diff = robot.rawInputs[i] - JOYSTICK_CENTER;
-    // Reverse axis 2 and axis 3 (invert the difference)
-    if (i == 2 || i == 1) {
-      diff = -diff;
+  if (robot.mode != GAME_ACTIVE) {
+    for (int i = 0; i < 3; i++) {
+      int diff = robot.rawInputs[i] - JOYSTICK_CENTER;
+      // Reverse axis 2 and axis 3 (invert the difference)
+      if (i == 2 || i == 1) {
+        diff = -diff;
+      }
+      if (abs(diff) > JOYSTICK_DEADZONE) {
+        float normalized = (float)(abs(diff) - JOYSTICK_DEADZONE) / JOYSTICK_MAX_RANGE;
+        float speed = (normalized * normalized) * SERVO_SPEED_MULTIPLIER;
+        robot.targetPos[i] = constrain(robot.targetPos[i] + (diff > 0 ? speed : -speed), 
+                                       SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+        moved = true;
+        if (speed > maxSpeed) maxSpeed = speed;
+      }
     }
-    if (abs(diff) > JOYSTICK_DEADZONE) {
-      float normalized = (float)(abs(diff) - JOYSTICK_DEADZONE) / JOYSTICK_MAX_RANGE;
-      float speed = (normalized * normalized) * SERVO_SPEED_MULTIPLIER;
-      robot.targetPos[i] = constrain(robot.targetPos[i] + (diff > 0 ? speed : -speed), 
-                                     SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
-      moved = true;
-      if (speed > maxSpeed) maxSpeed = speed;
-    }
-  }
 
-  if (moved) {
-    robot.lastInputTime = millis();
-    robot.mode = MANUAL;
-    playTargetingHum(maxSpeed);
+    if (moved) {
+      robot.lastInputTime = millis();
+      robot.mode = MANUAL;
+      playTargetingHum(maxSpeed);
+    }
   }
 }
 
@@ -226,15 +279,20 @@ void processGripperControl() {
   static bool lastSw2 = HIGH;
   
   if (sw2 && lastSw2 == HIGH) {
-    robot.gripOpen = !robot.gripOpen;
-    robot.targetPos[3] = robot.gripOpen ? GRIP_OPEN : GRIP_CLOSE;
-    robot.lastInputTime = millis();
-    robot.mode = MANUAL;
-    
-    if (robot.gripOpen) {
-      playServoRelease();
+    if (robot.mode == GAME_ACTIVE) {
+      // Game-specific button handling
+      handleGameInput(1);
     } else {
-      playServoLock();
+      robot.gripOpen = !robot.gripOpen;
+      robot.targetPos[3] = robot.gripOpen ? GRIP_OPEN : GRIP_CLOSE;
+      robot.lastInputTime = millis();
+      robot.mode = MANUAL;
+      
+      if (robot.gripOpen) {
+        playServoRelease();
+      } else {
+        playServoLock();
+      }
     }
   }
   lastSw2 = sw2;
@@ -245,23 +303,333 @@ void processHomeButton() {
   static bool lastSw1 = HIGH;
   
   if (sw1 && lastSw1 == HIGH) {
-    returnToHome();
-    playServoRelease();
-    Serial.println("HOME POSITION - All servos centered");
+    if (robot.mode == GAME_ACTIVE) {
+      // Exit game
+      exitGameMode();
+      playServoRelease();
+    } else if (robot.mode == GAME_MENU) {
+      // Do nothing in menu
+    } else {
+      returnToHome();
+      playServoRelease();
+      Serial.println("HOME POSITION - All servos centered");
+    }
   }
   lastSw1 = sw1;
 }
 
+void processDualButtonPress() {
+  bool sw1 = digitalRead(joySW1) == LOW;
+  bool sw2 = digitalRead(joySW2) == LOW;
+  static bool lastBothPressed = false;
+  static uint32_t bothPressedTime = 0;
+  
+  if (sw1 && sw2 && !lastBothPressed) {
+    bothPressedTime = millis();
+    lastBothPressed = true;
+  } else if (!sw1 || !sw2) {
+    if (lastBothPressed && (millis() - bothPressedTime) < DUAL_PRESS_TIMEOUT) {
+      // Dual press detected
+      if (robot.mode == GAME_MENU) {
+        selectGame(game.currentGame);
+      }
+    }
+    lastBothPressed = false;
+  }
+}
+
+void handleGameInput(int inputType) {
+  // inputType: 0 = joystick movement, 1 = button press
+  // Implementation depends on current game
+}
+
 /* 
- * [SECTION 9: OPERATING MODE MANAGEMENT]
+ * [SECTION 9: GAME MODE SYSTEM]
+ */
+
+void initializeGameMode() {
+  robot.mode = GAME_MENU;
+  game.currentGame = 0;
+  game.score = 0;
+  game.gameWon = false;
+  Serial.println("ENTERING GAME MODE");
+  playGameSelect();
+}
+
+void exitGameMode() {
+  robot.mode = MANUAL;
+  robot.lastInputTime = millis();
+  returnToHome();
+  Serial.println("EXITING GAME MODE");
+}
+
+void drawGameMenu() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  
+  display.setCursor(10, 2);
+  display.println("COMBAT GAMING MODE");
+  display.drawLine(0, 10, 127, 10, WHITE);
+  
+  const char* gameNames[] = {"TARGET HUNT", "REACTION", "DODGE"};
+  
+  for (int i = 0; i < NUM_GAMES; i++) {
+    display.setCursor(20, 18 + (i * 12));
+    if (i == game.currentGame) {
+      display.print(">>> ");
+    } else {
+      display.print("    ");
+    }
+    display.println(gameNames[i]);
+  }
+  
+  display.setTextSize(1);
+  display.setCursor(5, 56);
+  display.println("PRESS BOTH TO SELECT");
+  
+  drawScanlineFrame();
+  display.display();
+}
+
+void updateGameMenuInput() {
+  int jX2_val = analogRead(joyX2);
+  int diff = jX2_val - JOYSTICK_CENTER;
+  
+  if (abs(diff) > JOYSTICK_DEADZONE) {
+    if (diff > 0) {
+      game.currentGame = (game.currentGame + 1) % NUM_GAMES;
+      playGameSelect();
+      delay(200);
+    } else {
+      game.currentGame = (game.currentGame - 1 + NUM_GAMES) % NUM_GAMES;
+      playGameSelect();
+      delay(200);
+    }
+  }
+}
+
+void selectGame(int gameIndex) {
+  game.currentGame = gameIndex;
+  robot.mode = GAME_ACTIVE;
+  game.gameStartTime = millis();
+  game.score = 0;
+  game.gameWon = false;
+  playGameSelect();
+  
+  // Initialize specific game
+  switch (gameIndex) {
+    case 0: // Target Hunt
+      game.targetScore = 5;
+      game.targetX = random(10, 110);
+      game.targetY = random(10, 50);
+      game.playerX = 64;
+      game.playerY = 32;
+      break;
+    case 1: // Reaction Time
+      game.targetScore = 5;
+      game.displayedReady = false;
+      game.reactionStartTime = 0;
+      break;
+    case 2: // Dodge
+      game.targetScore = 10;
+      game.obstacleX = 64;
+      game.obstacleY = 32;
+      game.dodgePosition = 64;
+      break;
+  }
+}
+
+/* 
+ * [SECTION 10: GAME IMPLEMENTATIONS]
+ */
+
+// GAME 1: TARGET HUNT - Navigate joystick to move player towards randomly placed targets
+void updateTargetHunt() {
+  int jX1_val = analogRead(joyX1);
+  int jY1_val = analogRead(joyY1);
+  
+  int diffX = jX1_val - JOYSTICK_CENTER;
+  int diffY = jY1_val - JOYSTICK_CENTER;
+  
+  if (abs(diffX) > JOYSTICK_DEADZONE) {
+    game.playerX += (diffX > 0 ? 2 : -2);
+    game.playerX = constrain(game.playerX, 10, 110);
+  }
+  
+  if (abs(diffY) > JOYSTICK_DEADZONE) {
+    game.playerY += (diffY < 0 ? 2 : -2);
+    game.playerY = constrain(game.playerY, 10, 50);
+  }
+  
+  // Check collision with target
+  if (abs(game.playerX - game.targetX) < 8 && abs(game.playerY - game.targetY) < 8) {
+    game.score++;
+    playGameSuccess();
+    if (game.score >= game.targetScore) {
+      game.gameWon = true;
+    }
+    game.targetX = random(10, 110);
+    game.targetY = random(10, 50);
+  }
+  
+  // Draw game
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  
+  display.setCursor(20, 2);
+  display.printf("TARGET HUNT");
+  display.drawLine(0, 10, 127, 10, WHITE);
+  
+  // Draw target
+  display.drawCircle(game.targetX, game.targetY, 3, WHITE);
+  display.drawCircle(game.targetX, game.targetY, 4, WHITE);
+  
+  // Draw player
+  display.drawRect(game.playerX - 2, game.playerY - 2, 4, 4, WHITE);
+  
+  display.setCursor(3, 54);
+  display.printf("SCORE: %d/%d TIME: %ldms", game.score, game.targetScore, millis() - game.gameStartTime);
+  
+  display.display();
+}
+
+// GAME 2: REACTION TIME - Click button as fast as possible after "GO!" appears
+void updateReactionTime() {
+  uint32_t elapsedTime = millis() - game.gameStartTime;
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  
+  display.setCursor(15, 2);
+  display.println("REACTION TIME");
+  display.drawLine(0, 10, 127, 10, WHITE);
+  
+  if (elapsedTime < 2000) {
+    // Waiting phase
+    display.setTextSize(2);
+    display.setCursor(30, 25);
+    display.println("WAIT...");
+    display.setTextSize(1);
+  } else if (elapsedTime < 5000) {
+    if (!game.displayedReady) {
+      game.reactionStartTime = millis();
+      game.displayedReady = true;
+      playSystemsOnline();
+    }
+    // Go phase
+    display.setTextSize(3);
+    display.setCursor(35, 20);
+    display.println("GO!");
+    display.setTextSize(1);
+  } else {
+    // Game over - too slow
+    display.setCursor(20, 25);
+    display.println("TOO SLOW!");
+    game.gameWon = false;
+    if (millis() - game.gameStartTime > 6000) {
+      exitGameMode();
+    }
+  }
+  
+  if (game.gameWon) {
+    uint32_t reactionTime = millis() - game.reactionStartTime;
+    display.setTextSize(1);
+    display.setCursor(10, 45);
+    display.printf("TIME: %ldms", reactionTime);
+  }
+  
+  display.display();
+}
+
+// GAME 3: DODGE - Avoid obstacles moving left/right, control with joystick
+void updateDodge() {
+  int jX2_val = analogRead(joyX2);
+  int diff = jX2_val - JOYSTICK_CENTER;
+  
+  if (abs(diff) > JOYSTICK_DEADZONE) {
+    game.dodgePosition += (diff > 0 ? 3 : -3);
+    game.dodgePosition = constrain(game.dodgePosition, 30, 98);
+  }
+  
+  // Move obstacle
+  game.obstacleX -= 2;
+  if (game.obstacleX < 10) {
+    game.obstacleX = 118;
+    game.score++;
+    playGameSuccess();
+    if (game.score >= game.targetScore) {
+      game.gameWon = true;
+    }
+  }
+  
+  // Check collision
+  if (game.obstacleX > game.dodgePosition - 6 && game.obstacleX < game.dodgePosition + 6 &&
+      game.obstacleY > 30 && game.obstacleY < 50) {
+    playGameFail();
+    game.gameWon = false;
+    delay(500);
+    exitGameMode();
+  }
+  
+  // Draw game
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  
+  display.setCursor(30, 2);
+  display.println("DODGE");
+  display.drawLine(0, 10, 127, 10, WHITE);
+  
+  // Draw game area
+  display.drawLine(0, 28, 128, 28, WHITE);
+  display.drawLine(0, 52, 128, 52, WHITE);
+  
+  // Draw obstacle
+  display.fillRect(game.obstacleX - 2, 35, 4, 10, WHITE);
+  
+  // Draw player
+  display.fillRect(game.dodgePosition - 4, 38, 8, 4, WHITE);
+  
+  display.setCursor(3, 56);
+  display.printf("DODGED: %d/%d", game.score, game.targetScore);
+  
+  display.display();
+}
+
+void handleGameWin() {
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  
+  display.setCursor(15, 15);
+  display.println("YOU WIN!");
+  
+  display.setTextSize(1);
+  display.setCursor(20, 40);
+  display.printf("SCORE: %d", game.score);
+  
+  display.display();
+  
+  playGameSuccess();
+  delay(3000);
+  exitGameMode();
+}
+
+/* 
+ * [SECTION 11: OPERATING MODE MANAGEMENT]
  */
 void updateOperatingMode() {
   uint32_t now = millis();
   
-  if (now - robot.lastInputTime > IDLE_TIMEOUT) {
-    robot.mode = DEMO;
-  } else {
-    robot.mode = MANUAL;
+  if (robot.mode != GAME_MENU && robot.mode != GAME_ACTIVE) {
+    if (now - robot.lastInputTime > IDLE_TIMEOUT) {
+      robot.mode = DEMO;
+    } else {
+      robot.mode = MANUAL;
+    }
   }
 }
 
@@ -279,7 +647,7 @@ void runDemoMode() {
 }
 
 /* 
- * [SECTION 10: T-800 DISPLAY MANAGEMENT]
+ * [SECTION 12: T-800 DISPLAY MANAGEMENT]
  */
 void drawScanlineFrame() {
   // Draw border rectangle ONLY (no scanlines to avoid screen lines effect)
@@ -421,7 +789,7 @@ void updateDemoDisplay() {
 }
 
 /* 
- * [SECTION 11: INITIALIZATION]
+ * [SECTION 13: INITIALIZATION]
  */
 void setup() {
   Serial.begin(115200);
@@ -467,6 +835,8 @@ void setup() {
   robot.screenStage = 0;
   robot.bootStage = 0;
   robot.mode = MANUAL;
+  robot.sw1Pressed = false;
+  robot.sw2Pressed = false;
 
   // Display boot sequence
   Serial.println("[OK] Audio system initializing...");
@@ -493,9 +863,10 @@ void setup() {
 }
 
 /* 
- * [SECTION 12: MAIN CONTROL LOOP]
+ * [SECTION 14: MAIN CONTROL LOOP]
  */
 void loop() {
+  processDualButtonPress();
   processJoystickInput();
   processGripperControl();
   processHomeButton();
@@ -515,9 +886,32 @@ void loop() {
     case IDLE:
       updateTelemetryDisplay();
       break;
+
+    case GAME_MENU:
+      updateGameMenuInput();
+      drawGameMenu();
+      break;
+
+    case GAME_ACTIVE:
+      switch (game.currentGame) {
+        case 0: // Target Hunt
+          updateTargetHunt();
+          break;
+        case 1: // Reaction Time
+          updateReactionTime();
+          break;
+        case 2: // Dodge
+          updateDodge();
+          break;
+      }
+      
+      if (game.gameWon) {
+        handleGameWin();
+      }
+      break;
   }
   
-  if (robot.mode != DEMO) {
+  if (robot.mode != DEMO && robot.mode != GAME_ACTIVE) {
     noTone(buzzerPin);
   }
 
