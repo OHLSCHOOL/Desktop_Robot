@@ -8,8 +8,8 @@
 /* 
  * [SECTION 1: HARDWARE & NETWORK CONFIGURATION]
  */
-const char* ssid = "";    // wifi name inside ""
-const char* password = ""; //wifi password inside ""
+const char* ssid = "";
+const char* password = "";
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
@@ -26,215 +26,476 @@ const int buzzerPin = 20;
 #define I2C_SCL 9
 
 /* 
- * [SECTION 3: ROBOT KINEMATICS & SMOOTHING]
+ * [SECTION 3: CONFIGURATION CONSTANTS]
  */
-Servo servos[4];
-float pos[] = {90, 90, 90, 160};      
-float currentPos[] = {90, 90, 90, 160}; 
-bool gripOpen = true;
-const int GRIP_CLOSE = 160;
-const int GRIP_OPEN = 70;
-const float SMOOTH_SPEED = 0.03; 
+#define JOYSTICK_CENTER 2048
+#define JOYSTICK_DEADZONE 700
+#define JOYSTICK_MAX_RANGE (JOYSTICK_CENTER - JOYSTICK_DEADZONE)
+#define SERVO_SPEED_MULTIPLIER 5.0
+#define SMOOTH_INTERPOLATION 0.08
+#define SERVO_MIN_ANGLE 0
+#define SERVO_MAX_ANGLE 180
+#define DISPLAY_UPDATE_INTERVAL 40
+#define DEMO_POSE_INTERVAL 2500
+#define IDLE_TIMEOUT 30000
+#define SERVO_INIT_DELAY 500
+#define NUM_SERVOS 4
+#define NUM_DEMO_POSES 10
+#define GRIP_CLOSE 160
+#define GRIP_OPEN 70
+#define MOVEMENT_THRESHOLD 0.05
 
 /* 
- * [SECTION 4: AUTONOMOUS POSE DATABASE]
+ * [SECTION 4: TERMINATOR T-800 AUDIO ENGINE]
  */
-float demoPoses[10][4] = {
-  {90, 45, 130, 70},  {45, 90, 90, 160}, {135, 90, 90, 160},
-  {90, 150, 30, 70},  {90, 20, 160, 160}, {20, 45, 45, 70},
-  {160, 45, 45, 70},  {90, 90, 45, 160}, {45, 120, 120, 70},
-  {90, 90, 90, 70}
-};
+void playTerminatorStartup() {
+  // T-800 Boot Sequence with original composition
+  
+  // Deep bass pulses (power-up)
+  for (int i = 0; i < 3; i++) {
+    tone(buzzerPin, 60, 200);
+    delay(250);
+  }
+  
+  // Rising tension sweep
+  for (int f = 200; f <= 1200; f += 40) {
+    tone(buzzerPin, f, 30);
+    delay(20);
+  }
+  
+  // Main T-800 Theme riff
+  int theme[] = {659, 659, 659, 622, 659, 784, 523, 392, 523, 392, 330, 523, 330, 330};
+  int durations[] = {150, 150, 150, 100, 150, 300, 200, 200, 200, 200, 200, 200, 150, 300};
+  
+  for (int i = 0; i < 14; i++) {
+    tone(buzzerPin, theme[i], durations[i]);
+    delay(durations[i] + 50);
+  }
+  
+  // Power-up chords
+  tone(buzzerPin, 523, 150); delay(100);
+  tone(buzzerPin, 783, 150); delay(100);
+  tone(buzzerPin, 1046, 300);
+  
+  noTone(buzzerPin);
+  delay(200);
+}
 
-/* 
- * [SECTION 5: SYSTEM TIMERS]
- */
-unsigned long lastInputTime = 0;
-const unsigned long TIMEOUT = 30000;      
-const unsigned long DEMO_INTERVAL = 30000; 
-unsigned long lastDemoSwitch = 0;
-unsigned long lastScreenSwitch = 0;
-int currentDemoPose = 0;
-int screenStage = 0; 
-
-/* 
- * [SECTION 6: SCI-FI AUDIO ENGINE]
- */
-void playSciFiStartup() {
-  int startupNotes[] = {300, 600, 450, 900, 750, 1500, 2000};
-  for (int n : startupNotes) { tone(buzzerPin, n, 100); delay(120); }
-  for (int f = 2000; f < 3000; f += 50) { tone(buzzerPin, f, 10); delay(10); }
+void playSystemsOnline() {
+  // Quick beep sequence
+  for (int i = 0; i < 3; i++) {
+    tone(buzzerPin, 1000, 50);
+    delay(80);
+  }
   noTone(buzzerPin);
 }
 
-void playSciFiHum(float speed) {
+void playTargetingHum(float speed) {
   if (speed > 0.1) {
     static int phase = 0;
-    int baseFreq = 700 + (int)(speed * 180);
-    int osc = sin(phase * 0.4) * 80; 
-    tone(buzzerPin, baseFreq + osc, 20);
+    int baseFreq = 500 + (int)(speed * 300);
+    int variation = sin(phase * 0.1) * 100;
+    tone(buzzerPin, baseFreq + variation, 25);
     phase++;
   }
 }
 
-void playChirp(bool open) {
-  for(int i=0; i<3; i++) {
-    int f = open ? (1000 + i*500) : (2500 - i*500);
-    tone(buzzerPin, f, 40); delay(50);
+void playServoLock() {
+  // Ascending mechanical lock
+  for (int i = 0; i < 4; i++) {
+    tone(buzzerPin, 800 + i * 200, 50);
+    delay(60);
+  }
+  noTone(buzzerPin);
+}
+
+void playServoRelease() {
+  // Descending mechanical release
+  for (int i = 3; i >= 0; i--) {
+    tone(buzzerPin, 800 + i * 200, 50);
+    delay(60);
   }
   noTone(buzzerPin);
 }
 
 /* 
- * [SECTION 7: TELEMETRY DISPLAY]
+ * [SECTION 5: ROBOT STATE STRUCTURE]
  */
-void updateTelemetryDisplay(int inputs[]) {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(WHITE);
-  display.setCursor(10, 2);
-  display.println(">> MANUAL OVERRIDE");
-  for(int i=0; i<3; i++) {
-    display.setCursor(5, 17 + (i*11));
-    display.printf("AX %d: %3.0f | IN:%4d", i+1, pos[i], inputs[i]);
+enum RobotMode { MANUAL = 0, DEMO = 1, IDLE = 2 };
+
+struct RobotState {
+  float targetPos[NUM_SERVOS];
+  float currentPos[NUM_SERVOS];
+  bool gripOpen;
+  uint32_t lastInputTime;
+  uint32_t lastDemoSwitch;
+  uint32_t lastDisplayUpdate;
+  int currentDemoPose;
+  int screenStage;
+  RobotMode mode;
+  int rawInputs[4];
+  int bootStage;
+} robot;
+
+Servo servos[NUM_SERVOS];
+
+/* 
+ * [SECTION 6: AUTONOMOUS POSE DATABASE]
+ */
+float demoPoses[NUM_DEMO_POSES][NUM_SERVOS] = {
+  {90, 45, 130, 70},   {45, 90, 90, 160},  {135, 90, 90, 160},
+  {90, 150, 30, 70},   {90, 20, 160, 160}, {20, 45, 45, 70},
+  {160, 45, 45, 70},   {90, 90, 45, 160},  {45, 120, 120, 70},
+  {90, 90, 90, 70}
+};
+
+/* 
+ * [SECTION 7: SERVO CONTROL]
+ */
+void setServoPosition(int servoIndex, float angle) {
+  if (servoIndex < 0 || servoIndex >= NUM_SERVOS) {
+    Serial.printf("ERROR: Invalid servo index %d\n", servoIndex);
+    return;
   }
-  display.setCursor(5, 52);
-  display.printf("GRIPPER: %s", gripOpen ? "READY" : "LOCKED");
-  display.display();
+  angle = constrain(angle, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+  servos[servoIndex].write((int)angle);
+}
+
+void updateServoPositions() {
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    float diff = robot.targetPos[i] - robot.currentPos[i];
+    if (abs(diff) > MOVEMENT_THRESHOLD) {
+      robot.currentPos[i] += diff * SMOOTH_INTERPOLATION;
+      setServoPosition(i, robot.currentPos[i]);
+    } else if (abs(diff) > 0.01) {
+      // Direct write for final adjustments
+      robot.currentPos[i] = robot.targetPos[i];
+      setServoPosition(i, robot.currentPos[i]);
+    }
+  }
 }
 
 /* 
- * [SECTION 8: AUTONOMOUS LOGIC & PIXEL ROTATION]
+ * [SECTION 8: INPUT PROCESSING]
  */
+void processJoystickInput() {
+  robot.rawInputs[0] = analogRead(joyX1);
+  robot.rawInputs[1] = analogRead(joyY1);
+  robot.rawInputs[2] = analogRead(joyY2);
+  robot.rawInputs[3] = analogRead(joyX2);
+  
+  bool moved = false;
+  float maxSpeed = 0;
+
+  for (int i = 0; i < 3; i++) {
+    int diff = robot.rawInputs[i] - JOYSTICK_CENTER;
+    if (abs(diff) > JOYSTICK_DEADZONE) {
+      float normalized = (float)(abs(diff) - JOYSTICK_DEADZONE) / JOYSTICK_MAX_RANGE;
+      float speed = (normalized * normalized) * SERVO_SPEED_MULTIPLIER;
+      robot.targetPos[i] = constrain(robot.targetPos[i] + (diff > 0 ? speed : -speed), 
+                                     SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+      moved = true;
+      if (speed > maxSpeed) maxSpeed = speed;
+    }
+  }
+
+  if (moved) {
+    robot.lastInputTime = millis();
+    robot.mode = MANUAL;
+    playTargetingHum(maxSpeed);
+  }
+}
+
+void processGripperControl() {
+  bool sw2 = digitalRead(joySW2) == LOW;
+  static bool lastSw2 = HIGH;
+  
+  if (sw2 && lastSw2 == HIGH) {
+    robot.gripOpen = !robot.gripOpen;
+    robot.targetPos[3] = robot.gripOpen ? GRIP_OPEN : GRIP_CLOSE;
+    robot.lastInputTime = millis();
+    robot.mode = MANUAL;
+    
+    if (robot.gripOpen) {
+      playServoRelease();
+    } else {
+      playServoLock();
+    }
+  }
+  lastSw2 = sw2;
+}
+
+/* 
+ * [SECTION 9: OPERATING MODE MANAGEMENT]
+ */
+void updateOperatingMode() {
+  uint32_t now = millis();
+  
+  if (now - robot.lastInputTime > IDLE_TIMEOUT) {
+    robot.mode = DEMO;
+  } else {
+    robot.mode = MANUAL;
+  }
+}
+
 void runDemoMode() {
-  if (millis() - lastDemoSwitch > DEMO_INTERVAL) {
-    currentDemoPose = (currentDemoPose + 1) % 10;
-    lastDemoSwitch = millis();
+  if (millis() - robot.lastDemoSwitch > DEMO_POSE_INTERVAL) {
+    robot.currentDemoPose = (robot.currentDemoPose + 1) % NUM_DEMO_POSES;
+    robot.lastDemoSwitch = millis();
+    
+    for (int i = 0; i < NUM_SERVOS; i++) {
+      robot.targetPos[i] = demoPoses[robot.currentDemoPose][i];
+    }
   }
+  
+  updateServoPositions();
+}
 
-  for (int i = 0; i < 4; i++) {
-    float target = demoPoses[currentDemoPose][i];
-    currentPos[i] += (target - currentPos[i]) * SMOOTH_SPEED;
-    servos[i].write((int)currentPos[i]);
+/* 
+ * [SECTION 10: T-800 DISPLAY MANAGEMENT]
+ */
+void drawScanlineFrame() {
+  // Draw scanlines effect
+  for (int y = 0; y < SCREEN_HEIGHT; y += 2) {
+    display.drawLine(0, y, SCREEN_WIDTH - 1, y, WHITE);
   }
+  // Draw border rectangle
+  display.drawRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, WHITE);
+}
 
-  if (millis() - lastScreenSwitch > 10000) {
-    screenStage = (screenStage + 1) % 3;
-    lastScreenSwitch = millis();
-  }
-
+void updateBootDisplay() {
   display.clearDisplay();
-  display.setTextColor(WHITE);
   display.setTextSize(1);
-  display.setCursor(34, 3);
-  display.print("AUTOMATION");
+  display.setTextColor(WHITE);
+  
+  // Title
+  display.setCursor(15, 2);
+  display.println("T-800 SERIES 800");
   display.drawLine(0, 12, 127, 12, WHITE);
+  
+  // Boot sequence
+  display.setCursor(10, 20);
+  display.println("NEURAL NET PROCESSOR");
+  display.setCursor(20, 28);
+  display.println("INITIALIZING...");
+  
+  // Animated dots
+  int dotCount = (robot.bootStage % 40) / 10;
+  display.setCursor(60, 28);
+  for (int i = 0; i < dotCount; i++) {
+    display.print(".");
+  }
+  
+  display.setCursor(10, 40);
+  display.println("COMBAT MODE SYSTEMS");
+  display.setCursor(20, 48);
+  display.println("STATUS: ONLINE");
+  
+  drawScanlineFrame();
+  display.display();
+}
 
+void updateTelemetryDisplay() {
+  if (millis() - robot.lastDisplayUpdate < DISPLAY_UPDATE_INTERVAL) {
+    return;
+  }
+  robot.lastDisplayUpdate = millis();
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  
+  // Title bar
+  display.setCursor(18, 2);
+  display.println("[T-800 COMBAT MODE]");
+  display.drawLine(0, 10, 127, 10, WHITE);
+  
+  // Axis readouts
+  for (int i = 0; i < 3; i++) {
+    display.setCursor(3, 14 + (i * 10));
+    display.printf("AX%d: %3.0f  [", i + 1, robot.currentPos[i]);
+    // Bar graph
+    int barLength = (robot.currentPos[i] / 180.0) * 30;
+    for (int j = 0; j < barLength; j++) display.print("=");
+    display.println("]");
+  }
+  
+  // Gripper status
+  display.setCursor(3, 50);
+  display.print("GRIPPER: ");
+  display.println(robot.gripOpen ? "[OPEN]" : "[LOCKED]");
+  
+  drawScanlineFrame();
+  display.display();
+}
+
+void updateDemoDisplay() {
+  if (millis() - robot.lastDisplayUpdate < DISPLAY_UPDATE_INTERVAL) {
+    return;
+  }
+  robot.lastDisplayUpdate = millis();
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  
+  // Title bar
+  display.setCursor(32, 2);
+  display.println("[AUTONOMOUS MODE]");
+  display.drawLine(0, 10, 127, 10, WHITE);
+  
   struct tm timeinfo;
   char buf[20];
+  
   if (getLocalTime(&timeinfo)) {
-    switch (screenStage) {
-      case 0: // DATE LAYOUT - Size 2, Two Lines
-        display.setTextSize(2);
-        // Line 1: Month and Day (e.g., "May 07")
-        strftime(buf, sizeof(buf), "%b %d", &timeinfo);
-        // Size 2 chars are 12px wide. "May 07" is 6 chars = 72px. (128-72)/2 = 28
-        display.setCursor(28, 22); 
-        display.print(buf);
+    switch (robot.screenStage) {
+      case 0: // Neural Net Processor status
+        display.setCursor(15, 18);
+        display.println("NEURAL NET");
+        display.setCursor(10, 26);
+        display.println("PROCESSOR ONLINE");
         
-        // Line 2: Year (e.g., "2026")
-        strftime(buf, sizeof(buf), "%Y", &timeinfo);
-        // "2026" is 4 chars = 48px. (128-48)/2 = 40
-        display.setCursor(40, 42); 
-        display.print(buf);
+        display.setCursor(12, 38);
+        display.println("MISSION TIME:");
+        strftime(buf, sizeof(buf), "%H:%M:%S", &timeinfo);
+        display.setCursor(28, 48);
+        display.println(buf);
         break;
 
-      case 1: // TIME LAYOUT
-        strftime(buf, sizeof(buf), "%I:%M %p", &timeinfo);
+      case 1: // Mission time display
+        display.setCursor(20, 16);
+        display.println("MISSION TIME");
         display.setTextSize(2);
-        // "02:05 PM" is 8 chars = 96px. (128-96)/2 = 16
-        display.setCursor(16, 32); 
-        display.print(buf);
+        strftime(buf, sizeof(buf), "%H:%M", &timeinfo);
+        display.setCursor(18, 32);
+        display.println(buf);
+        display.setTextSize(1);
         break;
 
-      case 2: // STATUS LAYOUT
-        display.setTextSize(1);
-        display.setCursor(10, 25);
-        display.printf("EXECUTION POSE:%d/10", currentDemoPose + 1);
-        display.drawRect(15, 50, 98, 8, WHITE);
-        display.fillRect(17, 52, (currentDemoPose + 1) * 9, 4, WHITE);
+      case 2: // Execution progress
+        display.setCursor(8, 18);
+        display.printf("POSE EXECUTION");
+        display.setCursor(10, 26);
+        display.printf("TARGET: %d/%d", robot.currentDemoPose + 1, NUM_DEMO_POSES);
+        
+        // Progress bar
+        display.drawRect(10, 40, 108, 10, WHITE);
+        int progress = ((robot.currentDemoPose + 1) * 106) / NUM_DEMO_POSES;
+        display.fillRect(11, 41, progress, 8, WHITE);
         break;
     }
   }
+  
+  drawScanlineFrame();
   display.display();
+  
+  // Update screen stage periodically
+  static uint32_t lastScreenSwitch = 0;
+  if (millis() - lastScreenSwitch > 8000) {
+    robot.screenStage = (robot.screenStage + 1) % 3;
+    lastScreenSwitch = millis();
+  }
 }
 
 /* 
- * [SECTION 9: INITIALIZATION]
+ * [SECTION 11: INITIALIZATION]
  */
 void setup() {
   Serial.begin(115200);
+  delay(500);
+  
+  Serial.println("\n");
+  Serial.println("========================================");
+  Serial.println("   T-800 SERIES ROBOT INITIALIZATION");
+  Serial.println("========================================");
+  
   Wire.begin(I2C_SDA, I2C_SCL);
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("[ERROR] SSD1306 display not found!");
+  } else {
+    Serial.println("[OK] Display initialized");
+  }
   
   pinMode(buzzerPin, OUTPUT);
   pinMode(joySW1, INPUT_PULLUP);
   pinMode(joySW2, INPUT_PULLUP);
+  Serial.println("[OK] GPIO pins configured");
 
-  for(int i=0; i<4; i++) {
+  // Initialize servos
+  for (int i = 0; i < NUM_SERVOS; i++) {
     servos[i].attach(servoPins[i]);
-    servos[i].write((int)pos[i]);
+    robot.targetPos[i] = 90;
+    robot.currentPos[i] = 90;
   }
+  delay(SERVO_INIT_DELAY);
+  Serial.println("[OK] Servos initialized and stabilized");
 
-  playSciFiStartup();
+  // Set gripper initial state
+  robot.gripOpen = true;
+  robot.targetPos[3] = GRIP_OPEN;
+  robot.currentPos[3] = GRIP_OPEN;
+  setServoPosition(3, GRIP_OPEN);
+
+  // Initialize robot state
+  robot.lastInputTime = millis();
+  robot.lastDemoSwitch = millis();
+  robot.lastDisplayUpdate = millis();
+  robot.currentDemoPose = 0;
+  robot.screenStage = 0;
+  robot.bootStage = 0;
+  robot.mode = MANUAL;
+
+  // Display boot sequence
+  Serial.println("[OK] Audio system initializing...");
+  
+  for (robot.bootStage = 0; robot.bootStage < 80; robot.bootStage++) {
+    updateBootDisplay();
+    delay(50);
+  }
+  
+  playTerminatorStartup();
+  Serial.println("[OK] T-800 Theme played");
+  
+  playSystemsOnline();
+  Serial.println("[OK] Systems online");
+  
+  // Start WiFi connection (non-blocking)
   WiFi.begin(ssid, password);
   configTzTime("EST5EDT,M3.2.0,M11.1.0", "pool.ntp.org");
+  Serial.println("[OK] WiFi and NTP initialization started");
+  
+  Serial.println("========================================");
+  Serial.println("   TERMINATOR ONLINE - READY TO HUNT");
+  Serial.println("========================================\n");
 }
 
 /* 
- * [SECTION 10: MAIN CONTROL LOOP]
+ * [SECTION 12: MAIN CONTROL LOOP]
  */
 void loop() {
-  int rawInputs[4] = {analogRead(joyX1), analogRead(joyY1), analogRead(joyY2), analogRead(joyX2)};
-  bool sw2 = digitalRead(joySW2) == LOW;
-  bool moved = false;
-  float maxSpeed = 0;
+  processJoystickInput();
+  processGripperControl();
+  updateOperatingMode();
 
-  for(int i=0; i<3; i++) {
-    int diff = rawInputs[i] - 2048;
-    if(abs(diff) > 700) {
-      float normalized = (float)(abs(diff) - 700) / (2048 - 700);
-      float speed = (normalized * normalized) * 5.0;
-      pos[i] = constrain(pos[i] + (diff > 0 ? speed : -speed), 0, 180);
-      moved = true;
-      if(speed > maxSpeed) maxSpeed = speed;
-    }
-  }
-
-  static bool lastSw2 = HIGH;
-  if(sw2 && lastSw2 == HIGH) {
-    gripOpen = !gripOpen;
-    pos[3] = gripOpen ? GRIP_OPEN : GRIP_CLOSE;
-    moved = true;
-    playChirp(gripOpen);
-  }
-  lastSw2 = sw2;
-
-  if(moved) {
-    lastInputTime = millis();
-    for(int i=0; i<4; i++) {
-      servos[i].write((int)pos[i]);
-      currentPos[i] = pos[i];
-    }
-    playSciFiHum(maxSpeed);
-    updateTelemetryDisplay(rawInputs);
-  } else {
-    noTone(buzzerPin);
-    if(millis() - lastInputTime > TIMEOUT) {
+  switch (robot.mode) {
+    case MANUAL:
+      updateServoPositions();
+      updateTelemetryDisplay();
+      break;
+      
+    case DEMO:
       runDemoMode();
-    } else {
-      updateTelemetryDisplay(rawInputs);
-    }
+      updateDemoDisplay();
+      break;
+      
+    case IDLE:
+      updateTelemetryDisplay();
+      break;
   }
-  delay(15);
+  
+  if (robot.mode != DEMO) {
+    noTone(buzzerPin);
+  }
+
+  delay(10);
 }
