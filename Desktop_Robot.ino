@@ -20,8 +20,8 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 const int servoPins[] = {4, 5, 6, 10};
 const int joyX1 = 1, joyY1 = 0; 
 const int joyX2 = 2, joyY2 = 3; 
-const int joySW1 = 21, joySW2 = 7;
-const int buzzerPin = 20;
+const int joySW1 = 20, joySW2 = 7;
+const int buzzerPin = 21;
 #define I2C_SDA 8
 #define I2C_SCL 9
 
