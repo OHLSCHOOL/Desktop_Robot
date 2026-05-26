@@ -48,11 +48,10 @@ const int buzzerPin = 21;
 /* 
  * [SECTION 3.5: GAME MODE CONSTANTS]
  */
-#define GAME_MENU 3
-#define GAME_ACTIVE 4
 #define NUM_GAMES 3
 #define DUAL_PRESS_TIMEOUT 300
 #define GAME_MENU_DEBOUNCE 200
+#define GAME_MODE_ENTRY_TIMEOUT 3000
 #define TARGET_HUNT_TIMEOUT 60000
 #define REACTION_TIME_TIMEOUT 8000
 #define DODGE_TIMEOUT 120000
@@ -330,18 +329,36 @@ void processDualButtonPress() {
   bool sw2 = digitalRead(joySW2) == LOW;
   static bool lastBothPressed = false;
   static uint32_t bothPressedTime = 0;
+  static bool entryDetected = false;
   
   if (sw1 && sw2 && !lastBothPressed) {
     bothPressedTime = millis();
     lastBothPressed = true;
+    entryDetected = false;
+  } else if (sw1 && sw2 && lastBothPressed && !entryDetected) {
+    // Both buttons held down
+    uint32_t holdTime = millis() - bothPressedTime;
+    
+    // Check for 3 second hold to enter game mode
+    if (holdTime >= GAME_MODE_ENTRY_TIMEOUT && robot.mode != GAME_MENU && robot.mode != GAME_ACTIVE) {
+      initializeGameMode();
+      entryDetected = true;
+      playGameSelect();
+    }
+    // Check for short press to select game (when in menu)
+    else if (holdTime < DUAL_PRESS_TIMEOUT && robot.mode == GAME_MENU && entryDetected) {
+      selectGame(game.currentGame);
+      entryDetected = true;
+    }
   } else if (!sw1 || !sw2) {
-    if (lastBothPressed && (millis() - bothPressedTime) < DUAL_PRESS_TIMEOUT) {
-      // Dual press detected
+    if (lastBothPressed && (millis() - bothPressedTime) < DUAL_PRESS_TIMEOUT && !entryDetected) {
+      // Short press in game menu
       if (robot.mode == GAME_MENU) {
         selectGame(game.currentGame);
       }
     }
     lastBothPressed = false;
+    entryDetected = false;
   }
 }
 
