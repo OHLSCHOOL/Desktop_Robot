@@ -52,6 +52,11 @@ const int buzzerPin = 21;
 #define GAME_ACTIVE 4
 #define NUM_GAMES 3
 #define DUAL_PRESS_TIMEOUT 300
+#define GAME_MENU_DEBOUNCE 200
+#define TARGET_HUNT_TIMEOUT 60000
+#define REACTION_TIME_TIMEOUT 8000
+#define DODGE_TIMEOUT 120000
+#define COLLISION_DISTANCE 5
 
 /* 
  * [SECTION 4: TERMINATOR T-800 AUDIO ENGINE]
@@ -161,12 +166,14 @@ struct GameState {
   uint32_t lastEventTime;
   int targetScore;
   bool gameWon;
+  bool gameLost;
   // Target Hunt specifics
   int targetX, targetY;
   int playerX, playerY;
   // Reaction Time specifics
   uint32_t reactionStartTime;
   bool displayedReady;
+  bool reactionButtonPressed;
   // Dodge specifics
   int obstacleX, obstacleY;
   int dodgePosition;
@@ -339,8 +346,23 @@ void processDualButtonPress() {
 }
 
 void handleGameInput(int inputType) {
-  // inputType: 0 = joystick movement, 1 = button press
-  // Implementation depends on current game
+  // inputType: 1 = button press
+  if (game.currentGame == 1 && inputType == 1) { // Reaction Time game
+    uint32_t elapsedTime = millis() - game.gameStartTime;
+    
+    // Only register if in GO phase (after 2000ms, before 5000ms)
+    if (elapsedTime >= 2000 && elapsedTime < 5000) {
+      if (!game.reactionButtonPressed) {
+        game.reactionButtonPressed = true;
+        game.reactionStartTime = millis() - game.gameStartTime;
+        game.gameWon = true;
+        playGameSuccess();
+      }
+    } else if (elapsedTime < 2000) {
+      // Early press during wait phase - minor penalty
+      playGameFail();
+    }
+  }
 }
 
 /* 
@@ -352,6 +374,7 @@ void initializeGameMode() {
   game.currentGame = 0;
   game.score = 0;
   game.gameWon = false;
+  game.gameLost = false;
   Serial.println("ENTERING GAME MODE");
   playGameSelect();
 }
@@ -396,16 +419,18 @@ void updateGameMenuInput() {
   int jX2_val = analogRead(joyX2);
   int diff = jX2_val - JOYSTICK_CENTER;
   
+  static uint32_t lastMenuInput = 0;
+  if (millis() - lastMenuInput < GAME_MENU_DEBOUNCE) return; // Debounce
+  
   if (abs(diff) > JOYSTICK_DEADZONE) {
     if (diff > 0) {
       game.currentGame = (game.currentGame + 1) % NUM_GAMES;
       playGameSelect();
-      delay(200);
     } else {
       game.currentGame = (game.currentGame - 1 + NUM_GAMES) % NUM_GAMES;
       playGameSelect();
-      delay(200);
     }
+    lastMenuInput = millis();
   }
 }
 
@@ -415,6 +440,7 @@ void selectGame(int gameIndex) {
   game.gameStartTime = millis();
   game.score = 0;
   game.gameWon = false;
+  game.gameLost = false;
   playGameSelect();
   
   // Initialize specific game
@@ -427,14 +453,15 @@ void selectGame(int gameIndex) {
       game.playerY = 32;
       break;
     case 1: // Reaction Time
-      game.targetScore = 5;
+      game.targetScore = 1;
       game.displayedReady = false;
       game.reactionStartTime = 0;
+      game.reactionButtonPressed = false;
       break;
     case 2: // Dodge
       game.targetScore = 10;
       game.obstacleX = 64;
-      game.obstacleY = 32;
+      game.obstacleY = 40;
       game.dodgePosition = 64;
       break;
   }
@@ -446,6 +473,14 @@ void selectGame(int gameIndex) {
 
 // GAME 1: TARGET HUNT - Navigate joystick to move player towards randomly placed targets
 void updateTargetHunt() {
+  // Check timeout
+  if (millis() - game.gameStartTime > TARGET_HUNT_TIMEOUT) {
+    if (!game.gameWon && !game.gameLost) {
+      game.gameLost = true;
+      playGameFail();
+    }
+  }
+  
   int jX1_val = analogRead(joyX1);
   int jY1_val = analogRead(joyY1);
   
@@ -462,8 +497,8 @@ void updateTargetHunt() {
     game.playerY = constrain(game.playerY, 10, 50);
   }
   
-  // Check collision with target
-  if (abs(game.playerX - game.targetX) < 8 && abs(game.playerY - game.targetY) < 8) {
+  // Check collision with target - tightened distance
+  if (abs(game.playerX - game.targetX) < COLLISION_DISTANCE && abs(game.playerY - game.targetY) < COLLISION_DISTANCE) {
     game.score++;
     playGameSuccess();
     if (game.score >= game.targetScore) {
@@ -482,15 +517,17 @@ void updateTargetHunt() {
   display.printf("TARGET HUNT");
   display.drawLine(0, 10, 127, 10, WHITE);
   
-  // Draw target
-  display.drawCircle(game.targetX, game.targetY, 3, WHITE);
+  // Draw target (larger, more visible)
   display.drawCircle(game.targetX, game.targetY, 4, WHITE);
+  display.drawCircle(game.targetX, game.targetY, 5, WHITE);
+  display.drawPixel(game.targetX, game.targetY, WHITE);
   
-  // Draw player
-  display.drawRect(game.playerX - 2, game.playerY - 2, 4, 4, WHITE);
+  // Draw player (more visible)
+  display.fillRect(game.playerX - 3, game.playerY - 3, 6, 6, WHITE);
+  display.drawRect(game.playerX - 3, game.playerY - 3, 6, 6, BLACK); // Outline
   
   display.setCursor(3, 54);
-  display.printf("SCORE: %d/%d TIME: %ldms", game.score, game.targetScore, millis() - game.gameStartTime);
+  display.printf("SCORE: %d/%d", game.score, game.targetScore);
   
   display.display();
 }
@@ -526,18 +563,30 @@ void updateReactionTime() {
     display.setTextSize(1);
   } else {
     // Game over - too slow
-    display.setCursor(20, 25);
-    display.println("TOO SLOW!");
-    game.gameWon = false;
-    if (millis() - game.gameStartTime > 6000) {
-      exitGameMode();
+    if (!game.gameWon && !game.gameLost) {
+      game.gameLost = true;
+      display.setCursor(15, 25);
+      display.println("TOO SLOW!");
+      display.setTextSize(1);
+      display.setCursor(20, 40);
+      display.println("Better luck next time!");
+      playGameFail();
+    } else if (game.gameLost) {
+      display.setCursor(15, 25);
+      display.println("TOO SLOW!");
+      display.setTextSize(1);
+      display.setCursor(20, 40);
+      display.println("Better luck next time!");
     }
   }
   
   if (game.gameWon) {
-    uint32_t reactionTime = millis() - game.reactionStartTime;
+    uint32_t reactionTime = game.reactionStartTime;
+    display.setTextSize(2);
+    display.setCursor(10, 20);
+    display.println("PERFECT!");
     display.setTextSize(1);
-    display.setCursor(10, 45);
+    display.setCursor(15, 45);
     display.printf("TIME: %ldms", reactionTime);
   }
   
@@ -546,6 +595,14 @@ void updateReactionTime() {
 
 // GAME 3: DODGE - Avoid obstacles moving left/right, control with joystick
 void updateDodge() {
+  // Check timeout
+  if (millis() - game.gameStartTime > DODGE_TIMEOUT) {
+    if (!game.gameWon && !game.gameLost) {
+      game.gameLost = true;
+      playGameFail();
+    }
+  }
+  
   int jX2_val = analogRead(joyX2);
   int diff = jX2_val - JOYSTICK_CENTER;
   
@@ -565,13 +622,13 @@ void updateDodge() {
     }
   }
   
-  // Check collision
-  if (game.obstacleX > game.dodgePosition - 6 && game.obstacleX < game.dodgePosition + 6 &&
+  // Check collision - tightened detection
+  if (abs(game.obstacleX - game.dodgePosition) < 8 &&
       game.obstacleY > 30 && game.obstacleY < 50) {
-    playGameFail();
-    game.gameWon = false;
-    delay(500);
-    exitGameMode();
+    if (!game.gameLost) {
+      playGameFail();
+      game.gameLost = true;
+    }
   }
   
   // Draw game
@@ -614,6 +671,25 @@ void handleGameWin() {
   display.display();
   
   playGameSuccess();
+  delay(3000);
+  exitGameMode();
+}
+
+void handleGameLose() {
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  
+  display.setCursor(10, 15);
+  display.println("GAME OVER");
+  
+  display.setTextSize(1);
+  display.setCursor(15, 40);
+  display.printf("FINAL SCORE: %d", game.score);
+  
+  display.display();
+  
+  playGameFail();
   delay(3000);
   exitGameMode();
 }
@@ -907,6 +983,8 @@ void loop() {
       
       if (game.gameWon) {
         handleGameWin();
+      } else if (game.gameLost) {
+        handleGameLose();
       }
       break;
   }
