@@ -93,7 +93,7 @@ const uint8_t I2C_SDA = 8, I2C_SCL = 9; // I2C communication pins
 #define NUM_GAMES 3
 #define DUAL_PRESS_TIMEOUT 300         // ms - short press duration threshold
 #define GAME_MENU_DEBOUNCE 200         // ms - debounce time for menu navigation
-#define GAME_MODE_ENTRY_TIMEOUT 3000   // ms - hold both buttons to enter games
+#define GAME_MODE_ENTRY_TIMEOUT 1500   // ms - hold both buttons to enter games
 
 // ==========================================
 // SECTION 9: GAME-SPECIFIC TIMING CONSTANTS
