@@ -664,23 +664,29 @@ void processHomeButton() {
 void processDualButtonPress() {
   bool sw1 = digitalRead(joySW1) == LOW;
   bool sw2 = digitalRead(joySW2) == LOW;
-  
+
   static bool lastBothPressed = false;
   static uint32_t bothPressedTime = 0;
-  
-  // STATE: Both buttons currently pressed
+
   if (sw1 && sw2 && !lastBothPressed) {
-    // TRANSITION: Just pressed both
     bothPressedTime = millis();
     lastBothPressed = true;
   }
   else if (sw1 && sw2 && lastBothPressed) {
-    // STATE: Both held down - check hold duration
     uint32_t holdTime = millis() - bothPressedTime;
-    
+
+    // === Visual feedback during hold ===
+    drawDisplayHeader("GAME MENU ENTRY");
+    display.setCursor(26, 32);
+    uint32_t countdown = (GAME_MODE_ENTRY_TIMEOUT > holdTime)
+                        ? (GAME_MODE_ENTRY_TIMEOUT - holdTime) / 1000 + 1 : 0;
+    display.printf("Hold: %lds", countdown);
+    display.display();
+    // ================================
+
     // ACTION 1: Long press (3s) to enter game mode
     if (holdTime >= GAME_MODE_ENTRY_TIMEOUT && 
-        robot.mode != GAME_MENU && 
+        robot.mode != GAME_MENU &&
         robot.mode != GAME_ACTIVE) {
       initializeGameMode();
       playGameSelect();
@@ -688,19 +694,14 @@ void processDualButtonPress() {
     }
   }
   else if ((!sw1 || !sw2) && lastBothPressed) {
-    // TRANSITION: Buttons released - check hold duration
     uint32_t holdTime = millis() - bothPressedTime;
-    
-    // ACTION 2: Short press to select game (in menu only)
     if (holdTime < DUAL_PRESS_TIMEOUT && robot.mode == GAME_MENU) {
       selectGame(game.currentGame);
       Serial.println("[INFO] Game selected");
     }
-    
     lastBothPressed = false;
   }
 }
-
 /**
  * FUNCTION: handleGameInput(int inputType)
  * 
@@ -824,27 +825,19 @@ void drawGameMenu() {
 void updateGameMenuInput() {
   int jX2_val = analogRead(joyX2);
   int diff = jX2_val - JOYSTICK_CENTER;
-  
-  static uint32_t lastMenuInput = 0;
-  
-  // Debounce check: prevent rapid menu scrolling
-  if (millis() - lastMenuInput < GAME_MENU_DEBOUNCE) {
-    return;
-  }
-  
-  // Check for sufficient joystick movement
-  if (abs(diff) > JOYSTICK_DEADZONE) {
+  static bool prevActive = false;
+
+  // Only trigger when crossing deadzone boundary (edge)
+  bool active = (abs(diff) > JOYSTICK_DEADZONE);
+  if (active && !prevActive) {
     if (diff > 0) {
-      // Right: scroll to next game (wrap around)
       game.currentGame = (game.currentGame + 1) % NUM_GAMES;
     } else {
-      // Left: scroll to previous game (wrap around)
       game.currentGame = (game.currentGame - 1 + NUM_GAMES) % NUM_GAMES;
     }
-    
-    playGameSelect();  // Audio feedback
-    lastMenuInput = millis();
+    playGameSelect();
   }
+  prevActive = active;
 }
 
 /**
