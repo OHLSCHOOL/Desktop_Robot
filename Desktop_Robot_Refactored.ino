@@ -664,16 +664,36 @@ void processHomeButton() {
 void processDualButtonPress() {
   bool sw1 = digitalRead(joySW1) == LOW;
   bool sw2 = digitalRead(joySW2) == LOW;
-
+  
   static bool lastBothPressed = false;
   static uint32_t bothPressedTime = 0;
-
+  
   if (sw1 && sw2 && !lastBothPressed) {
+    // Just pressed both
     bothPressedTime = millis();
     lastBothPressed = true;
   }
-  else if (sw1 && sw2 && lastBothPressed) {
+  else if ((!sw1 || !sw2) && lastBothPressed) {
+    // Buttons released - check how long they were held
     uint32_t holdTime = millis() - bothPressedTime;
+    
+    // LONG PRESS: 2.5-3.5 seconds to enter game (forgiving window)
+    if (holdTime >= 2500 && holdTime <= 3500 && 
+        robot.mode != GAME_MENU && 
+        robot.mode != GAME_ACTIVE) {
+      initializeGameMode();
+      playGameSelect();
+      Serial.printf("[INFO] Game mode entered (held for %ldms)\n", holdTime);
+    }
+    // SHORT PRESS: In menu only, select game
+    else if (holdTime >= 100 && holdTime < 600 && robot.mode == GAME_MENU) {
+      selectGame(game.currentGame);
+      Serial.println("[INFO] Game selected");
+    }
+    
+    lastBothPressed = false;
+  }
+}
 
     // === Visual feedback during hold ===
     drawDisplayHeader("GAME MENU ENTRY");
@@ -823,23 +843,32 @@ void drawGameMenu() {
  * Debouncing: 200ms between menu changes
  */
 void updateGameMenuInput() {
+  // Only allow menu navigation if we're already IN the menu
+  // Don't allow it during the entry hold phase
+  if (robot.mode != GAME_MENU) {
+    return;
+  }
+  
   int jX2_val = analogRead(joyX2);
   int diff = jX2_val - JOYSTICK_CENTER;
-  static bool prevActive = false;
-
-  // Only trigger when crossing deadzone boundary (edge)
-  bool active = (abs(diff) > JOYSTICK_DEADZONE);
-  if (active && !prevActive) {
+  
+  static uint32_t lastMenuInput = 0;
+  
+  if (millis() - lastMenuInput < GAME_MENU_DEBOUNCE) {
+    return;
+  }
+  
+  if (abs(diff) > JOYSTICK_DEADZONE) {
     if (diff > 0) {
       game.currentGame = (game.currentGame + 1) % NUM_GAMES;
     } else {
       game.currentGame = (game.currentGame - 1 + NUM_GAMES) % NUM_GAMES;
     }
+    
     playGameSelect();
+    lastMenuInput = millis();
   }
-  prevActive = active;
 }
-
 /**
  * FUNCTION: selectGame(int gameIndex)
  * 
@@ -1516,9 +1545,16 @@ void loop() {
   // Automatically transition to DEMO after 30s of inactivity
   updateOperatingMode();
   
-  // ===== MODE-SPECIFIC UPDATES =====
-  // Execute behavior appropriate to current mode
-  switch (robot.mode) {
+ // ===== ENTRY FEEDBACK =====
+  // Show visual feedback during game mode entry attempt
+  bool sw1 = digitalRead(joySW1) == LOW;
+  bool sw2 = digitalRead(joySW2) == LOW;
+  if (sw1 && sw2 && robot.mode != GAME_MENU && robot.mode != GAME_ACTIVE) {
+    // Being held - show progress instead of normal display
+    updateGameModeEntryDisplay();
+  } else {
+    // Normal mode operation
+    switch (robot.mode) {
     case MANUAL: {
       // User controlling servos
       updateServoPositions();        // Apply smooth interpolation
