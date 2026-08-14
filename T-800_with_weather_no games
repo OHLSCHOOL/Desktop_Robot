@@ -16,6 +16,8 @@
 // ---------------- Function Prototypes ----------------
 void playTerminatorTheme();
 void handleAsyncHomingMelody(unsigned long currentMillis);
+void handleAsyncStartupMelody(unsigned long currentMillis);
+void startStartupTheme();
 void connectToNetwork();
 void fetchWeatherUpdate();
 void drawVisualBar(int x, int y, float current, int minVal, int maxVal);
@@ -35,6 +37,15 @@ int homeMelody[] = { 73, 73, 78, 73, 73 };   // D2, D2, DS2, D2, D2};
 int homeDurations[] = { 400, 400, 400, 400, 800 }; 
 int currentHomeNoteIndex = -1; 
 unsigned long noteStartTime = 0;
+
+
+// --- Short deeper startup theme (non-blocking) ---
+// Frequencies chosen to be deeper and shorter, inspired by T2 motif
+int startupMelody[] = { 82, 82, 98, 123, 82 }; // E2, E2, G#2, B2, E2
+int startupDurations[] = { 180, 140, 160, 220, 320 };
+int startupGaps[] = { 40, 30, 30, 50, 0 };
+int currentStartupNoteIndex = -1;
+unsigned long startupNoteStartTime = 0;
 
 
 // --- WiFi & Open-Meteo Configuration ---
@@ -204,6 +215,7 @@ void playTerminatorTheme() {
 
   noTone(PIN_BUZZER);
 }
+
 void handleAsyncHomingMelody(unsigned long currentMillis) { 
   if (currentHomeNoteIndex < 0) return; 
   if (currentMillis - noteStartTime >= (unsigned long)(homeDurations[currentHomeNoteIndex] * 1.30)) { 
@@ -216,6 +228,31 @@ void handleAsyncHomingMelody(unsigned long currentMillis) {
       currentHomeNoteIndex = -1; 
     } 
   } 
+}
+
+// Async handler for the shorter deeper startup theme
+void handleAsyncStartupMelody(unsigned long currentMillis) {
+  if (currentStartupNoteIndex < 0) return;
+  int count = sizeof(startupMelody) / sizeof(startupMelody[0]);
+  if (currentMillis - startupNoteStartTime >= (unsigned long)(startupDurations[currentStartupNoteIndex] * 1.15)) {
+    noTone(PIN_BUZZER);
+    currentStartupNoteIndex++;
+    if (currentStartupNoteIndex < count) {
+      tone(PIN_BUZZER, startupMelody[currentStartupNoteIndex], startupDurations[currentStartupNoteIndex]);
+      startupNoteStartTime = currentMillis;
+    } else {
+      currentStartupNoteIndex = -1;
+    }
+  }
+}
+
+void startStartupTheme() {
+  currentStartupNoteIndex = 0;
+  startupNoteStartTime = millis();
+  // cancel any homing melody to avoid overlap
+  currentHomeNoteIndex = -1;
+  noTone(PIN_BUZZER);
+  tone(PIN_BUZZER, startupMelody[0], startupDurations[0]);
 }
 /***********************************************************************
  FUNCTION: connectToNetwork()
@@ -550,6 +587,7 @@ void processKinematicsEngine() {
 }
   
 
+  
   // Update target coordinates from Joysticks
   if (!isHomingModeActive) {
     if (abs(offset1X) > DEADBAND) s1.targetAngle += (offset1X > 0) ? 3 : -3; //axis1 joystick direction
@@ -563,9 +601,8 @@ void processKinematicsEngine() {
     gripperClosed = true; s4.targetAngle = s4.maxLimit; 
     
     isHomingModeActive = true; 
-    currentHomeNoteIndex = 0; 
-    noteStartTime = millis();
-    tone(PIN_BUZZER, homeMelody[0], homeDurations[0]); // Fixed: Given single note parameters
+    // Play the shorter deeper startup motif on home press for audible feedback
+    startStartupTheme();
   }
   lastHomeButtonState = j1sw;
 
@@ -632,7 +669,8 @@ Serial.println("=================================");
   }
   center1X = sum1X / 10; center1Y = sum1Y / 10; center2X = sum2X / 10;
 
-  playTerminatorTheme();
+  // Play a shorter, deeper startup motif asynchronously
+  startStartupTheme();
 
   ESP32PWM::allocateTimer(0); ESP32PWM::allocateTimer(1);
   ESP32PWM::allocateTimer(2); ESP32PWM::allocateTimer(3);
@@ -663,6 +701,8 @@ void loop() {
 
   // Async Homing Melody Player
   handleAsyncHomingMelody(currentMillis);
+  // Async Startup/feedback motif player
+  handleAsyncStartupMelody(currentMillis);
 
   // Throttled Network Weather Fetcher Loop
   if (currentMillis - lastWeatherQueryTime >= WEATHER_QUERY_INTERVAL_MS) {
