@@ -1,0 +1,685 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <ESP32Servo.h>
+#include <WiFi.h>
+#include <HTTPClient.h> 
+#include <ArduinoJson.h>
+#include "time.h"
+
+
+// ================================================================
+// T-800 RoboArm With Weather Data
+// Cleaned / Organized Edition
+// ================================================================
+
+// ---------------- Function Prototypes ----------------
+void playTerminatorTheme();
+void handleAsyncHomingMelody(unsigned long currentMillis);
+void connectToNetwork();
+void fetchWeatherUpdate();
+void drawVisualBar(int x, int y, float current, int minVal, int maxVal);
+void drawWeatherIcon(int x, int y, int code);
+void updateOLED();
+void processKinematicsEngine();
+
+
+// --- OLED Configuration ---
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// These must be at global scope, NOT inside any function
+int homeMelody[] = { 73, 73, 78, 73, 73 };   // D2, D2, DS2, D2, D2}; 
+int homeDurations[] = { 400, 400, 400, 400, 800 }; 
+int currentHomeNoteIndex = -1; 
+unsigned long noteStartTime = 0;
+
+
+// --- WiFi & Open-Meteo Configuration ---
+const char* WIFI_SSID = "";
+const char* WIFI_PASS = "";
+const char* WEATHER_LAT = "41.1681"; // Lordstown, OH
+const char* WEATHER_LON = "-80.8651";
+const long GMT_OFFSET_SEC = -18000;  // EST: -5 Hours * 3600
+const int DAYLIGHT_OFFSET_SEC = 3600;
+const char* NTP_SERVER_PRIMARY = "pool.ntp.org";
+
+// --- Pin Map Allocations ---
+const int PIN_AXIS1 = 4; // MG996R Base
+const int PIN_AXIS2 = 5; // MG996R Shoulder
+const int PIN_AXIS3 = 6; // MG90S Elbow
+const int PIN_AXIS4 = 10; // MG90S Gripper
+const int PIN_JOY1_X = 1;
+const int PIN_JOY1_Y = 0;
+const int PIN_JOY1_SW = 20;
+const int PIN_JOY2_X = 3;
+const int PIN_JOY2_Y = 2;
+const int PIN_JOY2_SW = 7;
+const int PIN_BUZZER = 21;
+
+// --- Actuator Instantiations & Tuning ---
+Servo servo1;
+Servo servo2;
+Servo servo3;
+Servo servo4;
+const float SMOOTH_SPEED_1 = 0.15;
+const float SMOOTH_SPEED_2 = 0.12;
+const float SMOOTH_SPEED_3 = 0.25;
+const float SMOOTH_SPEED_4 = 0.30;
+int center1X = 2048;
+int center1Y = 2048;
+int center2X = 2048;
+const int DEADBAND = 250;
+
+struct ServoState {
+  float currentAngle;
+  int targetAngle;
+  int minLimit;
+  int maxLimit;
+};
+ServoState s1 = {90.0, 90, 0, 180};
+ServoState s2 = {90.0, 90, 15, 165};
+ServoState s3 = {90.0, 90, 0, 180};
+ServoState s4 = {90.0, 90, 40, 140};
+
+// --- System Core States ---
+bool gripperClosed = false;
+bool lastGripButtonState = HIGH;
+bool lastHomeButtonState = HIGH;
+bool isHomingModeActive = false;
+unsigned long lastUpdateTime = 0;
+const int loopDelayMs = 15;
+unsigned long lastOledTime = 0;
+const int oledDelayMs = 100;
+int starAnimateFrame = 0;
+
+// --- Weather & Inactivity Trackers ---
+float webTemperature = 0.0;
+int weatherCode = 0;
+unsigned long lastWeatherQueryTime = 0;
+const unsigned long WEATHER_QUERY_INTERVAL_MS = 900000; // 15 Minutes
+unsigned long lastInactivityMarker = 0;
+const unsigned long TIMEOUT_THRESHOLD_MS = 30000; // 30 Seconds
+bool isScreenSaverActive = false;
+
+void playTerminatorTheme() {
+  // T2 Main Title - Brad Fiedel
+  // Structure: Heavy bass pulse + minor chord arpeggios + iconic 5-note motif
+  
+  #define B_NOTE  123   // B2 - deep industrial bass pulse
+  #define E2      82    // E2 - sub bass
+  #define A2      110   // A2
+  #define E3      165   // E3
+  #define A3      220   // A3
+  #define C4      262
+  #define B3      247
+  #define GS3     208
+  #define FS3     185
+  #define E4      330
+  #define D4      294
+  #define CS4     277
+  #define B4      494
+
+  // Helper lambda-style struct isn't available, so use parallel arrays
+  int melody[] = {
+    // --- Bass pulse intro (4 heavy hits) ---
+    E2,   0,    E2,   0,
+    E2,   0,    E2,   0,
+
+    // --- Rising minor arpeggio (E minor: E-G-B) ---
+    E3,   A3,   B3,   E4,
+
+    // --- Iconic 5-note motif: the "T2 heartbeat" ---
+    E4,   D4,   CS4,  B3,   A3,
+
+    // --- Drop back to bass with tension ---
+    0,    E2,   0,    E2,
+
+    // --- Second arpeggio run, higher ---
+    GS3,  B3,   E4,   GS3,
+
+    // --- Final motif with resolution drop ---
+    B4,   E4,   D4,   CS4,  B3,
+    0,    E2,   E2
+  };
+
+  int durations[] = {
+    // Bass intro
+    300, 200, 300, 200,
+    300, 200, 300, 350,
+
+    // Rising arpeggio
+    150, 150, 150, 400,
+
+    // 5-note motif
+    300, 200, 200, 200, 500,
+
+    // Bass drop
+    300, 300, 200, 400,
+
+    // Second arpeggio
+    150, 150, 200, 350,
+
+    // Final motif
+    350, 250, 200, 200, 200,
+    200, 300, 500
+  };
+
+  int noteGaps[] = {
+    // Bass intro
+    80, 0, 80, 0,
+    80, 0, 80, 0,
+
+    // Rising arpeggio
+    30, 30, 30, 150,
+
+    // 5-note motif
+    60, 40, 40, 40, 200,
+
+    // Bass drop
+    0, 80, 0, 150,
+
+    // Second arpeggio
+    30, 30, 30, 100,
+
+    // Final motif
+    60, 50, 40, 40, 40,
+    0, 80, 0
+  };
+
+  int count = sizeof(melody) / sizeof(melody[0]);
+
+  for (int i = 0; i < count; i++) {
+    if (melody[i] == 0) {
+      noTone(PIN_BUZZER);
+    } else {
+      tone(PIN_BUZZER, melody[i]);
+    }
+    delay(durations[i]);
+    noTone(PIN_BUZZER);
+    if (noteGaps[i] > 0) delay(noteGaps[i]);
+  }
+
+  noTone(PIN_BUZZER);
+}
+void handleAsyncHomingMelody(unsigned long currentMillis) { 
+  if (currentHomeNoteIndex < 0) return; 
+  if (currentMillis - noteStartTime >= (unsigned long)(homeDurations[currentHomeNoteIndex] * 1.30)) { 
+    noTone(PIN_BUZZER); 
+    currentHomeNoteIndex++; 
+    if (currentHomeNoteIndex < 5) { 
+      tone(PIN_BUZZER, homeMelody[currentHomeNoteIndex], homeDurations[currentHomeNoteIndex]); 
+      noteStartTime = currentMillis; 
+    } else { 
+      currentHomeNoteIndex = -1; 
+    } 
+  } 
+}
+/***********************************************************************
+ FUNCTION: connectToNetwork()
+
+ PURPOSE:
+ Connect robot to WiFi and synchronize time services.
+
+ WHY:
+ Weather and NTP time require internet access.
+
+ PROCESS:
+ 1. Connect to WiFi.
+ 2. Display connection progress.
+ 3. Sync time.
+ 4. Pull initial weather report.
+***********************************************************************/
+void connectToNetwork()
+
+{
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(0,10);
+  display.println("SKYNET CONNECT...");
+  display.print("NODE: ");
+  display.println(WIFI_SSID);
+  display.display();
+
+  Serial.println();
+  Serial.println("Connecting To WiFi...");
+  Serial.println(WIFI_SSID);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  int attempts = 0;
+
+  while (WiFi.status() != WL_CONNECTED && attempts < 30)
+  {
+    delay(500);
+
+    Serial.print(".");
+    display.print("[.]");
+    display.display();
+
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println();
+    Serial.println("WiFi Connected");
+
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+
+    configTime(
+      GMT_OFFSET_SEC,
+      DAYLIGHT_OFFSET_SEC,
+      NTP_SERVER_PRIMARY
+    );
+
+    fetchWeatherUpdate();
+  }
+  else
+  {
+    Serial.println("WiFi Connection Failed");
+  }
+}
+
+// ========================================== // 
+// 3. SKYNET NETWORK DATA INTERFACES // 
+// ========================================== // 
+/***********************************************************************
+ FUNCTION: fetchWeatherUpdate()
+
+ PURPOSE:
+ Connects to Open-Meteo and retrieves current weather conditions.
+
+ WHY:
+ The robot uses live weather intelligence for display on the OLED.
+
+ PROCESS:
+ 1. Verify WiFi connection.
+ 2. Build API request URL.
+ 3. Send HTTPS request.
+ 4. Receive JSON response.
+ 5. Parse temperature and weather code.
+ 6. Store values for OLED display.
+
+ OUTPUTS:
+   webTemperature
+   weatherCode
+***********************************************************************/
+void fetchWeatherUpdate()
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("Weather Update Aborted - No WiFi");
+    return;
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+
+  String queryUrl =
+    "https://api.open-meteo.com/v1/forecast?"
+    "latitude=" + String(WEATHER_LAT) +
+    "&longitude=" + String(WEATHER_LON) +
+    "&current=temperature_2m,weather_code"
+    "&temperature_unit=fahrenheit"
+    "&wind_speed_unit=mph"
+    "&timezone=auto";
+
+  Serial.println();
+  Serial.println("=================================");
+  Serial.println("OPEN METEO WEATHER REQUEST");
+  Serial.println(queryUrl);
+  Serial.println("=================================");
+
+  http.begin(queryUrl); // Uses WiFiClientSecure internally for HTTPS
+
+  int httpCode = http.GET();
+
+  Serial.print("HTTP Response Code: ");
+  Serial.println(httpCode);
+
+  if (httpCode == HTTP_CODE_OK)
+  {
+    String payload = http.getString();
+
+    Serial.println("------ RAW WEATHER JSON ------");
+    Serial.println(payload);
+    Serial.println("------------------------------");
+
+    JsonDocument filter;
+    filter["current"]["temperature_2m"] = true;
+    filter["current"]["weather_code"] = true;
+
+    JsonDocument doc;
+
+    DeserializationError error =
+      deserializeJson(
+        doc,
+        payload,
+        DeserializationOption::Filter(filter)
+      );
+
+    if (!error)
+    {
+      webTemperature =
+        doc["current"]["temperature_2m"] | 0.0;
+
+      weatherCode =
+        doc["current"]["weather_code"] | 0;
+
+      Serial.println("------ WEATHER DATA ------");
+
+      Serial.print("Temperature: ");
+      Serial.println(webTemperature);
+
+      Serial.print("Weather Code: ");
+      Serial.println(weatherCode);
+
+      Serial.println("--------------------------");
+    }
+    else
+    {
+      Serial.print("JSON Parse Error: ");
+      Serial.println(error.c_str());
+    }
+  }
+  else
+  {
+    Serial.print("Open-Meteo HTTP Error: ");
+    Serial.println(httpCode);
+  }
+
+  http.end();
+}
+
+//OLED Tactical Displays & Drone Asset Graphics 
+void drawVisualBar(int x, int y, float current, int minVal, int maxVal) { 
+  int width = 45; 
+  int fillWidth = map((int)round(current), minVal, maxVal, 0, width); 
+  display.drawRect(x, y, width, 6, SSD1306_WHITE); 
+  display.fillRect(x, y, fillWidth, 6, SSD1306_WHITE); 
+} 
+
+void drawWeatherIcon(int x, int y, int code) { 
+  // Redefined weather icons as tactical environment indicators
+  if (code <= 1) { // Clear/Sunny -> High Visibility
+    display.drawCircle(x + 10, y + 10, 5, SSD1306_WHITE); 
+    for (int i = 0; i < 360; i += 45) { 
+      float rad = i * 0.0174532925; 
+      display.drawLine(x + 10 + cos(rad) * 7, y + 10 + sin(rad) * 7, x + 10 + cos(rad) * 10, y + 10 + sin(rad) * 10, SSD1306_WHITE); 
+    } 
+  } else if (code <= 48) { // Cloudy -> Thermal Cover
+    display.fillCircle(x + 6, y + 12, 4, SSD1306_WHITE); 
+    display.fillCircle(x + 12, y + 10, 6, SSD1306_WHITE); 
+    display.fillCircle(x + 17, y + 12, 4, SSD1306_WHITE); 
+    display.fillRect(x + 6, y + 12, 12, 4, SSD1306_WHITE); 
+  } else if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code >= 95) { // Rain -> Moisture Interference
+    display.fillCircle(x + 8, y + 8, 4, SSD1306_WHITE); 
+    display.fillCircle(x + 13, y + 7, 5, SSD1306_WHITE); 
+    display.fillRect(x + 8, y + 9, 8, 3, SSD1306_WHITE); 
+    display.drawLine(x + 7, y + 14, x + 5, y + 18, SSD1306_WHITE); 
+    display.drawLine(x + 11, y + 14, x + 9, y + 18, SSD1306_WHITE); 
+    display.drawLine(x + 15, y + 14, x + 13, y + 18, SSD1306_WHITE); 
+  } else { // Snow -> Freeze Risk
+    display.drawLine(x + 10, y + 2, x + 10, y + 16, SSD1306_WHITE); 
+    display.drawLine(x + 3, y + 9, x + 17, y + 9, SSD1306_WHITE); 
+    display.drawLine(x + 5, y + 4, x + 15, y + 14, SSD1306_WHITE); 
+    display.drawLine(x + 5, y + 14, x + 15, y + 4, SSD1306_WHITE); 
+  } 
+} 
+
+String getWeatherString(int code) { 
+  if (code == 0) return "OPTIMAL"; 
+  if (code == 1) return "CLEAR"; 
+  if (code == 2) return "CLOUDY"; 
+  if (code == 3) return "OVERCAST"; 
+  if (code == 45 || code == 48) return "VIS OBSTRUCT"; 
+  if (code >= 51 && code <= 55) return "LIGHT RADAR HUMID"; 
+  if (code >= 61 && code <= 65) return "HEAVY PRECIP"; 
+  if (code >= 71 && code <= 77) return "ICING HAZARD"; 
+  if (code >= 80 && code <= 82) return "SCAN BLOCKED"; 
+  if (code >= 85 && code <= 86) return "SEVERE BLIZZARD"; 
+  if (code >= 95) return "EMP THREAT"; 
+  return "UNKNOWN ENV"; 
+} 
+
+void updateOLED() { 
+  display.clearDisplay(); 
+  display.setTextSize(1); 
+  display.setTextColor(SSD1306_WHITE); 
+  if (isScreenSaverActive) { 
+    struct tm timeinfo; 
+    char timeString[16] = "00:00:00"; 
+    char dateString[16] = "Jan 01, 2026"; 
+    if (getLocalTime(&timeinfo)) { 
+      strftime(timeString, sizeof(timeString), "%I:%M:%S %P", &timeinfo); 
+      strftime(dateString, sizeof(dateString), "%b %d, %Y", &timeinfo); 
+    } 
+    display.setCursor(10, 2); 
+    display.println("- CYBERDYNE SYS -"); 
+    display.drawLine(0, 12, 128, 12, SSD1306_WHITE); 
+    display.setCursor(0, 18); 
+    display.print("SYS CLK: "); 
+    display.println(timeString); 
+    display.setCursor(0, 29); 
+    display.print("OPER_DT: "); 
+    display.println(dateString); 
+    display.setCursor(0, 40); 
+    display.print("CORE T : "); 
+    display.print(webTemperature, 1); 
+    display.println(" F"); 
+    display.setCursor(0, 51); 
+    display.print("TACTCAL: "); 
+    display.println(getWeatherString(weatherCode)); 
+    drawWeatherIcon(100, 38, weatherCode); 
+    display.drawLine(0, 62, 128, 62, SSD1306_WHITE); 
+  } else { 
+    display.setCursor(2, 3); 
+    if (starAnimateFrame % 2 == 0) display.println("[=T-800 HUD Active=]"); 
+    else display.println("[-T-800 HUD Active-]"); 
+    display.drawLine(0, 12, 128, 12, SSD1306_WHITE); 
+    
+    display.setCursor(0, 16); 
+    display.print("CHASSIS: "); 
+    display.print((int)round(s1.currentAngle)); 
+    display.write(247); 
+    drawVisualBar(80, 17, s1.currentAngle, s1.minLimit, s1.maxLimit); 
+    
+    display.setCursor(0, 27); 
+    display.print("HYD_S2 : "); 
+    display.print((int)round(s2.currentAngle)); 
+    display.write(247); 
+    drawVisualBar(80, 28, s2.currentAngle, s2.minLimit, s2.maxLimit); 
+    
+    display.setCursor(0, 38); 
+    display.print("HYD_S3 : "); 
+    display.print((int)round(s3.currentAngle)); 
+    display.write(247); 
+    drawVisualBar(80, 39, s3.currentAngle, s3.minLimit, s3.maxLimit); 
+    
+    display.setCursor(0, 50); 
+    display.print("GRIP   : "); 
+    if (isHomingModeActive) display.print("TERMINATING..."); 
+    else if ((int)round(s1.currentAngle) == 144 && (int)round(s2.currentAngle) == 135 && (int)round(s3.currentAngle) == 156 && (int)round(s4.currentAngle) == s4.maxLimit) { 
+      display.print("CAPTURE"); 
+    } else if (gripperClosed) { 
+      display.print("TARGET LOCKED"); 
+    } else { 
+      display.print("SEARCH"); 
+    } 
+    display.drawLine(0, 61, 128, 61, SSD1306_WHITE); 
+  } 
+  display.display(); 
+}
+
+
+//Kinematics Tracking & Core Computation Engine
+
+void processKinematicsEngine() {
+  int j1x = analogRead(PIN_JOY1_X);
+  int j1y = analogRead(PIN_JOY1_Y);
+  int j2x = analogRead(PIN_JOY2_X);
+  int j1sw = digitalRead(PIN_JOY1_SW);
+  int j2sw = digitalRead(PIN_JOY2_SW);
+
+  int offset1X = j1x - center1X;
+  int offset1Y = j1y - center1Y;
+  int offset2X = j2x - center2X;
+
+  // Track user movements to manage the screen timeout
+  if (abs(offset1X) > DEADBAND || abs(offset1Y) > DEADBAND || abs(offset2X) > DEADBAND || j1sw == LOW || j2sw == LOW) {
+    lastInactivityMarker = millis();
+    isScreenSaverActive = false; 
+  }
+  if (millis() - lastInactivityMarker >= TIMEOUT_THRESHOLD_MS) {
+    isScreenSaverActive = true; 
+  }
+
+  // Auto Reset Homing Flag when destinations are hit
+  if (isHomingModeActive && 
+    abs(s1.currentAngle - 144) < 1.0 && 
+    abs(s2.currentAngle - 135) < 1.0 && 
+    abs(s3.currentAngle - 156) < 1.0 && 
+    abs(s4.currentAngle - s4.maxLimit) < 1.0) {
+  isHomingModeActive = false;
+}
+  
+
+  // Update target coordinates from Joysticks
+  if (!isHomingModeActive) {
+    if (abs(offset1X) > DEADBAND) s1.targetAngle += (offset1X > 0) ? 3 : -3; //axis1 joystick direction
+    if (abs(offset1Y) > DEADBAND) s2.targetAngle += (offset1Y > 0) ? -3 : 3; //axis2 joystick direction
+    if (abs(offset2X) > DEADBAND) s3.targetAngle += (offset2X > 0) ? 4 : -4; //axis3 joystick direction
+  }
+
+  // Handle Home Positioning Request Button
+  if (j1sw == LOW && lastHomeButtonState == HIGH) {
+    s1.targetAngle = 144; s2.targetAngle = 135; s3.targetAngle = 156;
+    gripperClosed = true; s4.targetAngle = s4.maxLimit; 
+    
+    isHomingModeActive = true; 
+    currentHomeNoteIndex = 0; 
+    noteStartTime = millis();
+    tone(PIN_BUZZER, homeMelody[0], homeDurations[0]); // Fixed: Given single note parameters
+  }
+  lastHomeButtonState = j1sw;
+
+  // Handle Gripper Toggle Button Input
+  if (j2sw == LOW && lastGripButtonState == HIGH) {
+     isHomingModeActive = false;
+     gripperClosed = !gripperClosed;
+     s4.targetAngle = gripperClosed ? s4.maxLimit : s4.minLimit;
+     if(gripperClosed) { tone(PIN_BUZZER, 880, 30); delay(35); tone(PIN_BUZZER, 1760, 40); } 
+     else { tone(PIN_BUZZER, 1760, 30); delay(35); tone(PIN_BUZZER, 880, 40); }
+  }
+  lastGripButtonState = j2sw;
+
+  // Mechanical Hardware Safety Enforcements
+  s1.targetAngle = constrain(s1.targetAngle, s1.minLimit, s1.maxLimit);
+  s2.targetAngle = constrain(s2.targetAngle, s2.minLimit, s2.maxLimit);
+  s3.targetAngle = constrain(s3.targetAngle, s3.minLimit, s3.maxLimit);
+  s4.targetAngle = constrain(s4.targetAngle, s4.minLimit, s4.maxLimit);
+
+  // Linear Interpolation Processing (LERP)
+  if (abs(s1.targetAngle - s1.currentAngle) > 0.2) s1.currentAngle += (s1.targetAngle - s1.currentAngle) * SMOOTH_SPEED_1; else s1.currentAngle = s1.targetAngle;
+  if (abs(s2.targetAngle - s2.currentAngle) > 0.2) s2.currentAngle += (s2.targetAngle - s2.currentAngle) * SMOOTH_SPEED_2; else s2.currentAngle = s2.targetAngle;
+  if (abs(s3.targetAngle - s3.currentAngle) > 0.2) s3.currentAngle += (s3.targetAngle - s3.currentAngle) * SMOOTH_SPEED_3; else s3.currentAngle = s3.targetAngle;
+  if (abs(s4.targetAngle - s4.currentAngle) > 0.2) s4.currentAngle += (s4.targetAngle - s4.currentAngle) * SMOOTH_SPEED_4; else s4.currentAngle = s4.targetAngle;
+
+  // Send Final Computed Hardware Positions To Physical Servos
+  servo1.write((int)round(s1.currentAngle));
+  servo2.write((int)round(s2.currentAngle));
+  servo3.write((int)round(s3.currentAngle));
+  servo4.write((int)round(s4.currentAngle));
+}
+
+//Initialization & Main Control Loop
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(PIN_JOY1_SW, INPUT_PULLUP);
+  pinMode(PIN_JOY2_SW, INPUT_PULLUP);
+
+  Wire.begin(8, 9); 
+ 
+
+Serial.println();
+Serial.println("=================================");
+Serial.println("T-800 SYSTEM BOOT");
+Serial.println("=================================");
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) for(;;);
+
+  connectToNetwork();
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setCursor(18, 7);  display.println("==================");
+  display.setCursor(24, 20); display.println("TARGET ACQUIRED");
+  display.setCursor(18, 32); display.println("==================");
+  display.setCursor(15, 50); display.println(" CALIBRATING JOYS.");
+  display.display();
+
+  long sum1X = 0, sum1Y = 0, sum2X = 0;
+  for(int i = 0; i < 10; i++) {
+    sum1X += analogRead(PIN_JOY1_X); sum1Y += analogRead(PIN_JOY1_Y); sum2X += analogRead(PIN_JOY2_X);
+    delay(40);
+  }
+  center1X = sum1X / 10; center1Y = sum1Y / 10; center2X = sum2X / 10;
+
+  playTerminatorTheme();
+
+  ESP32PWM::allocateTimer(0); ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2); ESP32PWM::allocateTimer(3);
+
+  servo1.setPeriodHertz(50); servo2.setPeriodHertz(50);
+  servo3.setPeriodHertz(50); servo4.setPeriodHertz(50);
+  
+servo1.attach(PIN_AXIS1, 544, 2400);
+servo1.write(144);
+delay(300);
+
+servo2.attach(PIN_AXIS2, 544, 2400);
+servo2.write(135);
+delay(300);
+
+servo3.attach(PIN_AXIS3, 544, 2400);
+servo3.write(156);
+delay(300);
+
+servo4.attach(PIN_AXIS4, 544, 2400);
+servo4.write(s4.maxLimit);
+delay(300);
+
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // Async Homing Melody Player
+  handleAsyncHomingMelody(currentMillis);
+
+  // Throttled Network Weather Fetcher Loop
+  if (currentMillis - lastWeatherQueryTime >= WEATHER_QUERY_INTERVAL_MS) {
+    lastWeatherQueryTime = currentMillis;
+    fetchWeatherUpdate();
+  }
+
+  // Core Kinematics Update Loop
+  if (currentMillis - lastUpdateTime >= loopDelayMs) {
+    lastUpdateTime = currentMillis;
+    processKinematicsEngine();
+  }
+
+  // Throttled Async OLED Screen Update Loop
+  if (currentMillis - lastOledTime >= oledDelayMs) {
+    lastOledTime = currentMillis;
+    starAnimateFrame++; 
+    updateOLED();
+  }
+}
